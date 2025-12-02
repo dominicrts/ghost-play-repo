@@ -8,8 +8,77 @@ from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
+from ghost_play.data.nfl_bdb_dataset import NFLPlayDataset
 from ghost_play.models.pigt import PIGTModel
 from ghost_play.models.pigt.physics import compute_physics_loss
+
+dataset = NFLPlayDataset(
+    data_dir="data/nfl-big-data-bowl-2024",
+    weeks=[1, 2, 3],
+    T_in=10,
+    T_future=20,
+    goal_dim=16,
+    max_plays=500,  # for quick experiments
+)
+loader = DataLoader(dataset, batch_size=4, shuffle=True)
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+model = PIGTModel(
+    in_channels=len(dataset.feature_keys),
+    d_model=128,
+    num_roles=len(DEFAULT_ROLE_MAP),
+    goal_dim=16,
+    num_gnn_layers=3,
+    gnn_heads=4,
+    k=5,
+    num_decoder_layers=4,
+    decoder_heads=4,
+    decoder_ffn=256,
+    dropout=0.1,
+    pos_dim=2,
+    dt=dataset.dt,
+).to(device)
+
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+
+for batch in loader:
+    x_past = batch["x_past"].to(device)         # [B, T_in, N, F]
+    pos_past = batch["pos_past"].to(device)     # [B, T_in, N, 2]
+    pos_future = batch["pos_future"].to(device) # [B, T_future, N, 2]
+    role_ids = batch["role_ids"].to(device)     # [B, N]
+    global_goal = batch["global_goal"].to(device)
+
+    B, T_in, N, F = x_past.shape
+    T_future = pos_future.shape[1]
+    d_model = model.decoder.d_model
+
+    # Simple decoder init
+    tgt_init = torch.zeros(B, T_future, N, d_model, device=device)
+
+    pos_pred, vel_pred, acc_pred = model(
+        x_past=x_past,
+        pos_past=pos_past,
+        role_ids=role_ids,
+        tgt_init=tgt_init,
+        global_goal=global_goal,
+    )
+
+    # Data loss (L2 to future trajectory)
+    loss_traj = torch.mean((pos_pred - pos_future) ** 2)
+
+    # Physics regularizer
+    L_phy, metrics_phy = compute_physics_loss(
+        pos_seq=pos_pred,
+        vel_seq=vel_pred,
+        acc_seq=acc_pred,
+    )
+
+    loss = loss_traj + 0.1 * L_phy
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 
 
 class DummyGhostPlayDataset(Dataset):

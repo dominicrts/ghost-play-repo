@@ -28,7 +28,36 @@ from torch import nn
 
 from ghost_play.models.pigt import PIGTModel
 from ghost_play.models.pigt.physics import compute_physics_loss
+from ghost_play.data.nfl_bdb_dataset import NFLPlayDataset
 
+def test_counterfactual_on_real_play(device="cpu"):
+    dataset = NFLPlayDataset(
+        data_dir="data/nfl-big-data-bowl-2024",
+        weeks=[1],
+        T_in=10,
+        T_future=20,
+        max_plays=32,
+    )
+    model, _ = build_pigt_model(device=device)
+    model.eval()
+
+    sample = dataset[0]
+    x_past = sample["x_past"].unsqueeze(0).to(device)
+    pos_past = sample["pos_past"].unsqueeze(0).to(device)
+    role_ids = sample["role_ids"].unsqueeze(0).to(device)
+    global_goal_base = sample["global_goal"].unsqueeze(0).to(device)
+
+    B, T_in, N, F = x_past.shape
+    T_future = sample["pos_future"].shape[0]
+    d_model = model.decoder.d_model
+
+    tgt_init = torch.zeros(B, T_future, N, d_model, device=device)
+    global_goal_deep = global_goal_base.clone()
+    global_goal_deep[:, 0] = 20.0  # WR deep
+
+    with torch.no_grad():
+        pos_base, _, _ = model(x_past, pos_past, role_ids, tgt_init, global_goal_base)
+        pos_deep, _, _ = model(x_past, pos_past, role_ids, tgt_init, global_goal_deep)
 
 # ---------------------------------------------------------------------------
 # Utility: build a PIGTModel consistent with your other scripts
